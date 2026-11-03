@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.xlsx
+*.xls
+.env
+debug_anomaly.py

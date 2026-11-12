@@ -13,19 +13,50 @@ additional_characters:
   get 0. Summaries can then simply sum the column.
 """
 
+import numpy as np
 import pandas as pd
-from evaluator import evaluate_line
+from evaluator import evaluate_line, compute_positional_cm, aggregate_to_6x6
+from tokenizer import normalize
 
 
-def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def process_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Apply the evaluator to every row and return a new DataFrame with the
+    evaluation columns appended, PLUS the aggregated 6x6 confusion matrix.
+
+    The existing per-row column additions, anomaly handling, and
+    additional_characters deduplication are unchanged. A 31x31 count matrix
+    is accumulated alongside (by calling ``compute_positional_cm`` on the
+    normalized strings) and then folded into the 6x6 thesis rubric via
+    ``aggregate_to_6x6``.
+
+    Returns
+    -------
+    (results_df, cm_6x6_df)
+        results_df  : original columns + 13 metric/anomaly/notes columns.
+        cm_6x6_df   : 6x6 labeled confusion-matrix DataFrame.
+    """
     seen_samples: set = set()
     records = []
+
+    # Running sum of the 31x31 raw matrix across all rows.
+    cm_31 = np.zeros((31, 31), dtype=np.int64)
 
     for _, row in df.iterrows():
         expected  = str(row.get("expected_output",  ""))
         predicted = str(row.get("predicted_output", ""))
 
+        # --- existing evaluation (unchanged) -------------------------------
         lm = evaluate_line(expected, predicted)
+
+        # --- passive confusion-matrix accumulation -------------------------
+        # evaluate_line() normalizes internally; we normalize here too so the
+        # CM helpers receive the same normalized form. normalize() is
+        # idempotent, so this never alters the evaluation result above.
+        exp_norm  = normalize(expected)
+        pred_norm = normalize(predicted)
+        cm_31 += compute_positional_cm(exp_norm, pred_norm)
+
         c  = lm.char
         w  = lm.word
 
@@ -58,4 +89,5 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
         records.append(result_row)
 
-    return pd.DataFrame(records)
+    cm_6x6 = aggregate_to_6x6(cm_31)
+    return pd.DataFrame(records), cm_6x6

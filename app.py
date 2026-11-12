@@ -73,20 +73,83 @@ if not valid_files:
 st.success(f"{len(valid_files)} file(s) loaded successfully.")
 
 # ---------------------------------------------------------------------------
-# 3. Evaluate
+# 3. Evaluate (results persist in session state so the Evaluate button is
+#    hidden after the first click, leaving only the download buttons).
 # ---------------------------------------------------------------------------
-if st.button("Evaluate Transcriptions", type="primary"):
-    results: list[tuple[str, pd.DataFrame]] = []
+if "eval_results" not in st.session_state:
+    st.session_state.eval_results = None
 
-    for stem, input_df in valid_files:
-        with st.spinner(f"Evaluating {stem}…"):
-            results_df = process_dataframe(input_df)
-        results.append((stem, results_df))
+# Clear stale results whenever the uploaded file set changes.
+_upload_signature = tuple((f.name, getattr(f, "size", None)) for f in uploaded_files)
+if st.session_state.get("upload_signature") != _upload_signature:
+    st.session_state.eval_results = None
+st.session_state.upload_signature = _upload_signature
 
+if st.session_state.eval_results is None:
+    if st.button("Evaluate Transcriptions", type="primary"):
+        results: list[tuple[str, pd.DataFrame, pd.DataFrame]] = []
+
+        for stem, input_df in valid_files:
+            with st.spinner(f"Evaluating {stem}…"):
+                results_df, cm_6x6 = process_dataframe(input_df)
+            results.append((stem, results_df, cm_6x6))
+
+        st.session_state.eval_results = results
+        st.rerun()
+else:
+    results = st.session_state.eval_results
     st.success("Evaluation complete.")
 
+    # ---- Overall summary across ALL tabs ---------------------------------
+    if len(results) > 1:
+        st.subheader("Overall Summary (All Tabs)")
+        all_rows = pd.concat([rdf for _, rdf, _ in results], ignore_index=True)
+        o_cols = [
+            "total characters", "total words",
+            "total correct predicted characters",
+            "total correct predicted words",
+            "total wrong characters", "total wrong words",
+            "total deleted characters", "total additional characters",
+        ]
+        o = {
+            col: pd.to_numeric(all_rows[col], errors="coerce").sum()
+            for col in o_cols if col in all_rows.columns
+        }
+        o_chars      = o.get("total characters", 0)
+        o_words      = o.get("total words", 0)
+        o_correct    = o.get("total correct predicted characters", 0)
+        o_correct_w  = o.get("total correct predicted words", 0)
+        o_wrong      = o.get("total wrong characters", 0)
+        o_wrong_w    = o.get("total wrong words", 0)
+        o_deleted    = o.get("total deleted characters", 0)
+        o_additional = o.get("total additional characters", 0)
+
+        o_char_acc = (o_correct / o_chars * 100) if o_chars > 0 else 0.0
+        o_word_acc = (o_correct_w / o_words * 100) if o_words > 0 else 0.0
+        o_cer      = ((o_wrong + o_deleted + o_additional) / o_chars * 100) if o_chars > 0 else 0.0
+        o_wer      = (o_wrong_w / o_words * 100) if o_words > 0 else 0.0
+
+        o1, o2, o3, o4 = st.columns(4)
+        o1.metric("Total Characters",   int(o_chars))
+        o2.metric("Total Words",         int(o_words))
+        o3.metric("Char Accuracy",       f"{o_char_acc:.2f}%")
+        o4.metric("Word Accuracy",       f"{o_word_acc:.2f}%")
+
+        o5, o6, o7, o8 = st.columns(4)
+        o5.metric("Correct Characters",  int(o_correct))
+        o6.metric("Correct Words",       int(o_correct_w))
+        o7.metric("Wrong Characters",    int(o_wrong))
+        o8.metric("Deleted Characters",  int(o_deleted))
+
+        o9, o10, o11 = st.columns(4)[:3]
+        o9.metric("Additional Characters", int(o_additional))
+        o10.metric("CER",                  f"{o_cer:.2f}%")
+        o11.metric("WER",                  f"{o_wer:.2f}%")
+
+        st.divider()
+
     # ---- Per-file summary metrics ----------------------------------------
-    for stem, results_df in results:
+    for stem, results_df, cm_6x6 in results:
         # Show anomaly warnings at the top
         if "anomaly" in results_df.columns:
             anomaly_rows = results_df[results_df["anomaly"].str.strip().astype(bool)]
@@ -170,13 +233,53 @@ if st.button("Evaluate Transcriptions", type="primary"):
 
         st.divider()
 
-    # ---- Download --------------------------------------------------------
-    st.subheader("Download Results")
-    excel_bytes = write_multi_results_excel(results)
-    st.download_button(
-        label="⬇ Download Results Excel",
-        data=excel_bytes,
-        file_name="braille_evaluation_results.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
+    # ---- Post-Deployment 6x6 Confusion Matrix ----------------------------
+    st.subheader("Post-Deployment 6×6 Confusion Matrix")
+    st.markdown(
+        "Aggregated across all evaluated files/tabs below. Rows are the "
+        "**actual** class group, columns are the **predicted** class group."
     )
+
+    # Build the overall 6x6 matrix by summing each per-file matrix.
+    # Aggregation is a linear sum, so summing the 6x6 frames is equivalent
+    # to aggregating the summed 31x31 matrix.
+    overall_cm: pd.DataFrame | None = None
+    for _, _, cm_6x6 in results:
+        if overall_cm is None:
+            overall_cm = cm_6x6.copy()
+        else:
+            overall_cm = overall_cm.add(cm_6x6, fill_value=0)
+    if overall_cm is not None:
+        overall_cm = overall_cm.astype(int)
+        st.dataframe(overall_cm, use_container_width=True)
+
+        # Optional: per-file breakdown in expanders
+        with st.expander("Per-file confusion matrices", expanded=False):
+            for stem, _, cm_6x6 in results:
+                st.markdown(f"**{stem}**")
+                st.dataframe(cm_6x6.astype(int), use_container_width=True)
+                st.divider()
+
+    # ---- Downloads (side by side) ----------------------------------------
+    excel_bytes = write_multi_results_excel(results)
+
+    st.subheader("Download")
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        if overall_cm is not None:
+            st.download_button(
+                label="⬇ Download 6×6 Confusion Matrix (CSV)",
+                data=overall_cm.to_csv().encode("utf-8"),
+                file_name="post_deployment_confusion_matrix_6x6.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+    with dl2:
+        st.download_button(
+            label="⬇ Download Results Excel",
+            data=excel_bytes,
+            file_name="braille_evaluation_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )

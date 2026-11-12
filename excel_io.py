@@ -235,7 +235,8 @@ def _compute_summary(results_df: pd.DataFrame) -> dict:
     return totals
 
 
-def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame) -> None:
+def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame,
+               cm_6x6: "pd.DataFrame | None" = None) -> None:
     """
     Write one tab into wb containing:
       - Detailed results table
@@ -243,6 +244,8 @@ def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame) -> None:
       - Per-sample summary (one block per unique sample_id)
       - Blank separator
       - Overall summary
+      - Blank separator
+      - Post-Deployment 6x6 Confusion Matrix (only when cm_6x6 is provided)
     All in a single worksheet named tab_name.
     """
     # Sanitize tab name: Excel sheet names max 31 chars, no special chars
@@ -321,7 +324,7 @@ def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame) -> None:
 
         for i, metric in enumerate(SUMMARY_METRICS):
             value   = totals.get(metric, 0)
-            display = f"{value:.2f}%" if metric in ("Character Accuracy (%)", "Word Accuracy (%)") else int(value)
+            display = f"{value:.2f}%" if metric in ("Character Accuracy (%)", "Word Accuracy (%)", "Character Error Rate (%)", "Word Error Rate (%)") else int(value)
             ws.cell(row=current_row, column=1, value=metric).border  = _CELL_BORDER
             ws.cell(row=current_row, column=2, value=display).border = _CELL_BORDER
             if i % 2 == 0:
@@ -350,7 +353,7 @@ def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame) -> None:
     totals = _compute_summary(results_df)
     for i, metric in enumerate(SUMMARY_METRICS):
         value   = totals.get(metric, 0)
-        display = f"{value:.2f}%" if metric in ("Character Accuracy (%)", "Word Accuracy (%)") else int(value)
+        display = f"{value:.2f}%" if metric in ("Character Accuracy (%)", "Word Accuracy (%)", "Character Error Rate (%)", "Word Error Rate (%)") else int(value)
         ws.cell(row=current_row, column=1, value=metric).border  = _CELL_BORDER
         ws.cell(row=current_row, column=2, value=display).border = _CELL_BORDER
         if i % 2 == 0:
@@ -358,9 +361,152 @@ def _write_tab(wb: Workbook, tab_name: str, results_df: pd.DataFrame) -> None:
             ws.cell(row=current_row, column=2).fill = _ALT_FILL
         current_row += 1
 
+    # ---- Section 4: Post-Deployment 6x6 Confusion Matrix -------------------
+    if cm_6x6 is not None and not cm_6x6.empty:
+        ws.append([])  # blank separator
+        current_row += 1
+
+        sec_cell = ws.cell(row=current_row, column=1,
+                           value="Post-Deployment 6x6 Confusion Matrix")
+        sec_cell.font = Font(bold=True, size=13, color="1F4E79")
+        current_row += 1
+
+        ws.cell(row=current_row, column=1,
+                value="Rows = Actual class group; Columns = Predicted class group").font = Font(italic=True, color="555555")
+        current_row += 1
+
+        # Build the matrix grid. Column 1 holds the row (actual) label; the
+        # 6 group columns start at column 2. A top header row labels the
+        # predicted groups, and a "Predicted ->" corner cell sits at (1,1).
+        n_groups = cm_6x6.shape[0]
+        col_labels = [str(c) for c in cm_6x6.columns]
+        row_labels = [str(r) for r in cm_6x6.index]
+
+        # Header row: corner + predicted labels
+        ws.cell(row=current_row, column=1, value="Actual \\ Predicted")
+        _style_header_row(ws, current_row, n_groups + 1)
+        for g in range(n_groups):
+            ws.cell(row=current_row, column=g + 2, value=col_labels[g])
+        current_row += 1
+
+        # Data rows
+        for r in range(n_groups):
+            # Row label in column 1
+            label_cell = ws.cell(row=current_row, column=1, value=row_labels[r])
+            label_cell.font = _HEADER_FONT
+            label_cell.fill = _HEADER_FILL
+            label_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            label_cell.border = _CELL_BORDER
+            for c in range(n_groups):
+                cell = ws.cell(row=current_row, column=c + 2,
+                               value=int(cm_6x6.iloc[r, c]))
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = _CELL_BORDER
+                if (r + c) % 2 == 0:
+                    cell.fill = _ALT_FILL
+            current_row += 1
+
+        # Widen matrix columns to fit the group labels
+        for g in range(n_groups):
+            col_letter = get_column_letter(g + 2)
+            ws.column_dimensions[col_letter].width = max(
+                ws.column_dimensions[col_letter].width or 0, 20
+            )
+
     # Ensure summary columns are wide enough
     ws.column_dimensions["A"].width = max(ws.column_dimensions["A"].width, 50)
     ws.column_dimensions["B"].width = max(ws.column_dimensions["B"].width, 20)
+
+
+def _write_summary_sheet(wb: Workbook, sheet_name: str, results_df: pd.DataFrame,
+                         cm_6x6: "pd.DataFrame | None" = None) -> None:
+    """
+    Write a dedicated summary sheet aggregating across all tabs:
+      - Overall metrics table (CER, WER, accuracies, totals, ...)
+      - Optional combined 6x6 confusion matrix below it.
+    """
+    # Build a unique, sanitized sheet name
+    safe_name = re.sub(r"[\\/*?:\[\]]", "_", sheet_name)[:31]
+    existing = {s.title for s in wb.worksheets}
+    if safe_name in existing:
+        base, suffix = safe_name[:28], 2
+        while f"{base}_{suffix}" in existing:
+            suffix += 1
+        safe_name = f"{base}_{suffix}"
+
+    ws = wb.create_sheet(safe_name)
+
+    title = ws.cell(row=1, column=1, value="Overall Summary (All Tabs)")
+    title.font = Font(bold=True, size=13, color="1F4E79")
+
+    # ---- Metrics table ----------------------------------------------------
+    ws.cell(row=2, column=1, value="Metric").font = _HEADER_FONT
+    ws.cell(row=2, column=1).fill = _HEADER_FILL
+    ws.cell(row=2, column=1).border = _CELL_BORDER
+    ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=2, column=2, value="Value").font = _HEADER_FONT
+    ws.cell(row=2, column=2).fill = _HEADER_FILL
+    ws.cell(row=2, column=2).border = _CELL_BORDER
+    ws.cell(row=2, column=2).alignment = Alignment(horizontal="center", vertical="center")
+
+    totals = _compute_summary(results_df)
+    r = 3
+    for i, metric in enumerate(SUMMARY_METRICS):
+        value = totals.get(metric, 0)
+        display = f"{value:.2f}%" if metric in (
+            "Character Accuracy (%)", "Word Accuracy (%)",
+            "Character Error Rate (%)", "Word Error Rate (%)",
+        ) else int(value)
+        ws.cell(row=r, column=1, value=metric).border = _CELL_BORDER
+        ws.cell(row=r, column=2, value=display).border = _CELL_BORDER
+        if i % 2 == 0:
+            ws.cell(row=r, column=1).fill = _ALT_FILL
+            ws.cell(row=r, column=2).fill = _ALT_FILL
+        r += 1
+
+    ws.column_dimensions["A"].width = 50
+    ws.column_dimensions["B"].width = 20
+
+    # ---- Combined 6x6 confusion matrix -----------------------------------
+    if cm_6x6 is not None and not cm_6x6.empty:
+        r += 1  # blank separator
+        sec = ws.cell(row=r, column=1,
+                      value="Post-Deployment 6x6 Confusion Matrix (All Tabs)")
+        sec.font = Font(bold=True, size=13, color="1F4E79")
+        r += 1
+        ws.cell(row=r, column=1,
+                value="Rows = Actual class group; Columns = Predicted class group").font = Font(italic=True, color="555555")
+        r += 1
+
+        n_groups = cm_6x6.shape[0]
+        col_labels = [str(c) for c in cm_6x6.columns]
+        row_labels = [str(rk) for rk in cm_6x6.index]
+
+        ws.cell(row=r, column=1, value="Actual \\ Predicted")
+        _style_header_row(ws, r, n_groups + 1)
+        for g in range(n_groups):
+            ws.cell(row=r, column=g + 2, value=col_labels[g])
+        r += 1
+
+        for ri in range(n_groups):
+            label_cell = ws.cell(row=r, column=1, value=row_labels[ri])
+            label_cell.font = _HEADER_FONT
+            label_cell.fill = _HEADER_FILL
+            label_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            label_cell.border = _CELL_BORDER
+            for ci in range(n_groups):
+                cell = ws.cell(row=r, column=ci + 2, value=int(cm_6x6.iloc[ri, ci]))
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = _CELL_BORDER
+                if (ri + ci) % 2 == 0:
+                    cell.fill = _ALT_FILL
+            r += 1
+
+        for g in range(n_groups):
+            col_letter = get_column_letter(g + 2)
+            ws.column_dimensions[col_letter].width = max(
+                ws.column_dimensions[col_letter].width or 0, 20
+            )
 
 
 def write_results_excel(results_df: pd.DataFrame) -> bytes:
@@ -370,13 +516,15 @@ def write_results_excel(results_df: pd.DataFrame) -> bytes:
     return write_multi_results_excel([("Results", results_df)])
 
 
-def write_multi_results_excel(files: list[tuple[str, pd.DataFrame]]) -> bytes:
+def write_multi_results_excel(files: list) -> bytes:
     """
-    Build an in-memory .xlsx where each (name, df) pair becomes one tab.
+    Build an in-memory .xlsx where each (name, df[, cm]) entry becomes one tab.
 
     Parameters
     ----------
-    files : list of (tab_name, results_df) tuples
+    files : list of tuples, each either:
+        (tab_name, results_df)                 — no confusion matrix
+        (tab_name, results_df, cm_6x6_df)      — with 6x6 confusion matrix
 
     Returns raw bytes suitable for st.download_button.
     """
@@ -384,8 +532,30 @@ def write_multi_results_excel(files: list[tuple[str, pd.DataFrame]]) -> bytes:
     # Remove the default empty sheet
     wb.remove(wb.active)
 
-    for tab_name, results_df in files:
-        _write_tab(wb, tab_name, results_df)
+    all_dfs: list[pd.DataFrame] = []
+    all_cms: list[pd.DataFrame] = []
+
+    for item in files:
+        if len(item) >= 3:
+            tab_name, results_df, cm_6x6 = item[0], item[1], item[2]
+        else:
+            tab_name, results_df = item[0], item[1]
+            cm_6x6 = None
+        _write_tab(wb, tab_name, results_df, cm_6x6)
+        all_dfs.append(results_df)
+        if cm_6x6 is not None:
+            all_cms.append(cm_6x6)
+
+    # Combined "Overall Summary (All Tabs)" sheet — only when >1 tab, since a
+    # single tab already has its own Overall Summary section.
+    if len(all_dfs) > 1:
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        combined_cm = None
+        if all_cms:
+            combined_cm = all_cms[0].copy()
+            for cm in all_cms[1:]:
+                combined_cm = combined_cm.add(cm, fill_value=0).astype(int)
+        _write_summary_sheet(wb, "Overall Summary (All Tabs)", combined_df, combined_cm)
 
     buffer = io.BytesIO()
     wb.save(buffer)

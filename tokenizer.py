@@ -23,6 +23,30 @@ TOKEN_MAP = {
 _TOKENS_SORTED = sorted(TOKEN_MAP.keys(), key=len, reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Thesis class IDs (0-30) for the confusion-matrix accumulator.
+#
+# This is a *passive* lookup used only by the new confusion-matrix helpers
+# (evaluator.compute_positional_cm / aggregate_to_6x6). It does NOT affect
+# the existing normalization or positional evaluation logic in any way.
+#
+#   a-z        -> classes 0-25  (letters)
+#   ,          -> class 26     (comma)
+#   \x00 (CAP) -> class 27     (CAP sentinel)
+#   #          -> class 28     (number indicator)
+#   .          -> class 29     (period)
+#   !          -> class 30     (exclamation)
+# ---------------------------------------------------------------------------
+CHAR_TO_CLASS = {
+    **{chr(ord("a") + i): i for i in range(26)},  # a-z -> 0-25
+    ",": 26,
+    CAP_CHAR: 27,
+    "#": 28,
+    ".": 29,
+    "!": 30,
+}
+
+
 def normalize(text: str) -> str:
     """
     Convert special tokens in *text* to their single-character equivalents.

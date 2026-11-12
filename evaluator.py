@@ -15,7 +15,11 @@ Key rules
 """
 
 from dataclasses import dataclass, field
-from tokenizer import normalize, CAP_CHAR
+
+import numpy as np
+import pandas as pd
+
+from tokenizer import normalize, CAP_CHAR, CHAR_TO_CLASS
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +339,108 @@ def evaluate_line(expected_raw: str, predicted_raw: str) -> LineMetrics:
             )
 
     return lm
+
+
+# ===========================================================================
+# Confusion-matrix helpers (passive accumulator)
+#
+# These functions do NOT participate in evaluate_line() or any of the existing
+# char/word metric calculations. They are standalone utilities that the batch
+# processor calls *alongside* evaluate_line() to build a class-level
+# confusion matrix without affecting the existing pipeline.
+# ===========================================================================
+
+# Size of the raw per-character confusion matrix (classes 0-30).
+_CM_SIZE = 31
+
+# Each of the 6 thesis-rubric groups maps to a [start, end) slice over the
+# 31x31 matrix indices.
+_GROUP_RANGES = [
+    (0, 26),    # 0: letters a-z        (classes 0-25)
+    (26, 27),   # 1: comma              (class 26)
+    (27, 28),   # 2: CAP sentinel       (class 27)
+    (28, 29),   # 3: # number indicator (class 28)
+    (29, 30),   # 4: period             (class 29)
+    (30, 31),   # 5: exclamation        (class 30)
+]
+
+_GROUP_LABELS = [
+    "Class 0-25 (a-z)",
+    "Class 26 (,)",
+    "Class 27 (CAP)",
+    "Class 28 (#)",
+    "Class 29 (.)",
+    "Class 30 (!)",
+]
+
+
+def compute_positional_cm(expected_norm: str, predicted_norm: str) -> np.ndarray:
+    """
+    Build a 31x31 raw count matrix from a single expected/predicted pair.
+
+    This performs a strict positional loop over ``zip(expected_norm,
+    predicted_norm)`` — i.e. only positions that exist in BOTH strings are
+    considered (positions beyond the shorter string are ignored, matching the
+    zip semantics).
+
+    Rules:
+      - Spaces (word separators) on either side are skipped.
+      - Characters not present in ``CHAR_TO_CLASS`` (unmapped tokens) are
+        skipped.
+      - For every remaining position the expected class ID ``e_cls`` and
+        predicted class ID ``p_cls`` are looked up, and the cell
+        ``[e_cls, p_cls]`` of the returned matrix is incremented by 1.
+
+    Parameters
+    ----------
+    expected_norm  : already-normalized expected string.
+    predicted_norm : already-normalized predicted string.
+
+    Returns
+    -------
+    np.ndarray of shape (31, 31), dtype int64.
+    """
+    cm = np.zeros((_CM_SIZE, _CM_SIZE), dtype=np.int64)
+    for e_char, p_char in zip(expected_norm, predicted_norm):
+        if e_char == " " or p_char == " ":
+            continue
+        e_cls = CHAR_TO_CLASS.get(e_char)
+        p_cls = CHAR_TO_CLASS.get(p_char)
+        if e_cls is None or p_cls is None:
+            continue
+        cm[e_cls, p_cls] += 1
+    return cm
+
+
+def aggregate_to_6x6(cm_31x31: np.ndarray) -> pd.DataFrame:
+    """
+    Aggregate a 31x31 raw count matrix into the official 6x6 thesis rubric.
+
+    Group layout (rows = actual, columns = predicted):
+        0 -> classes 0-25  (letters a-z, summed)
+        1 -> class 26      (comma)
+        2 -> class 27      (CAP)
+        3 -> class 28      (#)
+        4 -> class 29     (period)
+        5 -> class 30     (exclamation)
+
+    Each cell [i, j] is the sum of the 31x31 sub-matrix defined by the row
+    range of group i and the column range of group j.
+
+    Parameters
+    ----------
+    cm_31x31 : np.ndarray of shape (31, 31).
+
+    Returns
+    -------
+    pd.DataFrame of shape (6, 6) with labeled index and columns.
+    """
+    n = len(_GROUP_RANGES)
+    out = np.zeros((n, n), dtype=np.int64)
+    for i, (r_start, r_end) in enumerate(_GROUP_RANGES):
+        for j, (c_start, c_end) in enumerate(_GROUP_RANGES):
+            out[i, j] = cm_31x31[r_start:r_end, c_start:c_end].sum()
+
+    df = pd.DataFrame(out, index=_GROUP_LABELS, columns=_GROUP_LABELS)
+    df.index.name = "Actual \\ Predicted"
+    return df

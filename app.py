@@ -4,11 +4,14 @@ Streamlit front-end
 """
 
 import os
+import io
+import zipfile
 import streamlit as st
 import pandas as pd
 
 from excel_io import read_input_excel_all_sheets, write_multi_results_excel
 from batch_processor import process_dataframe
+from image_export import tab_to_portrait_image, safe_filename
 
 st.set_page_config(
     page_title="Evaluation for Braillelink",
@@ -263,8 +266,17 @@ else:
     # ---- Downloads (side by side) ----------------------------------------
     excel_bytes = write_multi_results_excel(results)
 
+    # Build ZIP of per-tab portrait PNGs (confusion matrix excluded)
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for stem, results_df, _ in results:
+            png = tab_to_portrait_image(results_df, stem)
+            zf.writestr(f"{safe_filename(stem)}.png", png)
+    zip_buf.seek(0)
+    zip_bytes = zip_buf.read()
+
     st.subheader("Download")
-    dl1, dl2 = st.columns(2)
+    dl1, dl2, dl3 = st.columns(3)
     with dl1:
         if overall_cm is not None:
             st.download_button(
@@ -281,5 +293,13 @@ else:
             file_name="braille_evaluation_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
+            use_container_width=True,
+        )
+    with dl3:
+        st.download_button(
+            label="⬇ Download Results Images (ZIP)",
+            data=zip_bytes,
+            file_name="braille_evaluation_images.zip",
+            mime="application/zip",
             use_container_width=True,
         )

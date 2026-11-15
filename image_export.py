@@ -268,6 +268,64 @@ def tab_to_portrait_image(results_df, tab_name, dpi=_DPI) -> bytes:
     return buf.read()
 
 
+def sheet_to_image(df, sheet_name, dpi=_DPI) -> bytes:
+    """
+    Render any arbitrary DataFrame (one Excel sheet) into a fixed US Letter
+    portrait PNG using the same visual style as tab_to_portrait_image.
+
+    The image contains a single table of whatever data is in the sheet —
+    no evaluation metrics, no summaries, no confusion matrix.
+
+    Returns PNG bytes.
+    """
+    n_rows = len(df)
+    n_rows_total = n_rows + 1   # +1 for header
+
+    headers    = [str(c) for c in df.columns]
+    table_rows = df.astype(str).values.tolist()
+
+    avail      = _MT - _MB
+    label_h    = _LABEL_H
+    # Fixed compact row height — same feel as the summary table in evaluation images.
+    # Blank space below is intentional (printed page behaviour).
+    row_h      = 0.022
+
+    fig = plt.figure(figsize=(_PAGE_W, _PAGE_H), dpi=dpi)
+    fig.patch.set_facecolor("white")
+    fig.clf()
+
+    # Title
+    fig.text(
+        0.5, 0.980,
+        f"{_trunc(sheet_name, 90)}",
+        ha="center", va="top",
+        fontsize=_TITLE_FS, fontweight="bold", color="black",
+    )
+
+    # Section label
+    cur_y = _MT
+    fig.text(
+        _ML, cur_y,
+        sheet_name,
+        ha="left", va="top",
+        fontsize=_SECTION_FS, fontweight="bold", color=_TTL_FG,
+    )
+    cur_y -= label_h
+
+    _draw_table_fig(
+        fig, headers, table_rows,
+        _DETAIL_FS, row_h,
+        _ML, _MR, cur_y,
+        cell_limit=_CELL_LIMIT,
+    )
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
 def safe_filename(name, limit=80) -> str:
     stem = re.sub(r'[\\/*?:"<>|]', "_", str(name)).strip().rstrip(".")
     return (stem or "tab")[:limit]

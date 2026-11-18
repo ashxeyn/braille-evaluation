@@ -26,6 +26,64 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
+# Excel → Image converter (independent — placed here so st.stop() calls
+# in the evaluation section below never block it)
+# ---------------------------------------------------------------------------
+with st.expander("📄 Excel to Image Converter", expanded=False):
+    st.markdown(
+        "Upload any Excel file to export each sheet as a portrait image "
+        "(US Letter, same format as the evaluation results images). "
+        "This is independent from the evaluation below."
+    )
+
+    converter_files = st.file_uploader(
+        "Upload Excel file(s) to convert (.xlsx or .xls)",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="converter_uploader",
+    )
+
+    if converter_files:
+        conv_sheets: list[tuple[str, pd.DataFrame]] = []
+
+        for f in converter_files:
+            try:
+                all_sheets = pd.read_excel(f, dtype=str, sheet_name=None)
+            except Exception as exc:
+                st.error(f"{f.name}: could not read — {exc}")
+                continue
+
+            for sheet_name, df in all_sheets.items():
+                df = df.fillna("")
+                conv_sheets.append((sheet_name, df))
+                with st.expander(
+                    f"Preview: {sheet_name} — {len(df):,} row(s)", expanded=False
+                ):
+                    st.dataframe(df.head(20), use_container_width=True)
+
+        if conv_sheets:
+            if st.button("Convert to Images", key="conv_btn", type="primary"):
+                conv_zip_buf = io.BytesIO()
+                with zipfile.ZipFile(
+                    conv_zip_buf, "w", compression=zipfile.ZIP_DEFLATED
+                ) as zf:
+                    for sheet_name, df in conv_sheets:
+                        with st.spinner(f"Rendering {sheet_name}…"):
+                            png = sheet_to_image(df, sheet_name)
+                        zf.writestr(f"{safe_filename(sheet_name)}.png", png)
+                conv_zip_buf.seek(0)
+
+                st.download_button(
+                    label="⬇ Download Images (ZIP)",
+                    data=conv_zip_buf.read(),
+                    file_name="excel_sheets_images.zip",
+                    mime="application/zip",
+                    type="primary",
+                )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
 # 1. File upload (multiple)
 # ---------------------------------------------------------------------------
 uploaded_files = st.file_uploader(
@@ -303,58 +361,3 @@ else:
             mime="application/zip",
             use_container_width=True,
         )
-
-# ---------------------------------------------------------------------------
-# Excel → Image converter (independent of evaluation)
-# ---------------------------------------------------------------------------
-st.divider()
-st.header("Excel to Image Converter")
-st.markdown(
-    "Upload any Excel file to export each sheet as a portrait image "
-    "(US Letter, same format as the evaluation results images)."
-)
-
-converter_files = st.file_uploader(
-    "Upload Excel file(s) to convert (.xlsx or .xls)",
-    type=["xlsx", "xls"],
-    accept_multiple_files=True,
-    key="converter_uploader",
-)
-
-if converter_files:
-    conv_sheets: list[tuple[str, pd.DataFrame]] = []
-
-    for f in converter_files:
-        try:
-            all_sheets = pd.read_excel(f, dtype=str, sheet_name=None)
-        except Exception as exc:
-            st.error(f"{f.name}: could not read — {exc}")
-            continue
-
-        for sheet_name, df in all_sheets.items():
-            df = df.fillna("")
-            conv_sheets.append((sheet_name, df))
-            with st.expander(
-                f"Preview: {sheet_name} — {len(df):,} row(s)", expanded=False
-            ):
-                st.dataframe(df.head(20), use_container_width=True)
-
-    if conv_sheets:
-        if st.button("Convert to Images", key="conv_btn", type="primary"):
-            conv_zip_buf = io.BytesIO()
-            with zipfile.ZipFile(
-                conv_zip_buf, "w", compression=zipfile.ZIP_DEFLATED
-            ) as zf:
-                for sheet_name, df in conv_sheets:
-                    with st.spinner(f"Rendering {sheet_name}…"):
-                        png = sheet_to_image(df, sheet_name)
-                    zf.writestr(f"{safe_filename(sheet_name)}.png", png)
-            conv_zip_buf.seek(0)
-
-            st.download_button(
-                label="⬇ Download Images (ZIP)",
-                data=conv_zip_buf.read(),
-                file_name="excel_sheets_images.zip",
-                mime="application/zip",
-                type="primary",
-            )

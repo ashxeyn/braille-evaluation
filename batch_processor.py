@@ -64,7 +64,8 @@ def process_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         # Write additional_characters once per sample to avoid double-counting
         if sid not in seen_samples:
-            additional = int(pd.to_numeric(row.get("additional_characters", 0), errors="coerce") or 0)
+            raw_add = pd.to_numeric(row.get("additional_characters", 0), errors="coerce")
+            additional = int(raw_add) if pd.notna(raw_add) else 0
             seen_samples.add(sid)
         else:
             additional = 0

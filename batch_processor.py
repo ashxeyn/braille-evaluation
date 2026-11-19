@@ -64,8 +64,11 @@ def process_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         # Write additional_characters once per sample to avoid double-counting
         if sid not in seen_samples:
-            raw_add = pd.to_numeric(row.get("additional_characters", 0), errors="coerce")
-            additional = int(raw_add) if pd.notna(raw_add) else 0
+            try:
+                raw_add = row.get("additional_characters", 0)
+                additional = int(float(raw_add)) if raw_add is not None and str(raw_add).strip() not in ("", "nan", "NaN") else 0
+            except (ValueError, TypeError):
+                additional = 0
             seen_samples.add(sid)
         else:
             additional = 0

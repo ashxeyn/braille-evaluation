@@ -381,22 +381,25 @@ else:
         st.divider()
 
     # ---- Downloads (side by side) ----------------------------------------
-    try:
-        excel_bytes = write_multi_results_excel(results, ttest_results or None)
-    except Exception as _exc:
-        st.warning(f"Could not include t-test sheet in Excel: {_exc}")
-        excel_bytes = write_multi_results_excel(results, None)
+    excel_bytes = write_multi_results_excel(results, ttest_results or None)
 
+<<<<<<< Updated upstream
+    # Build ZIP of per-tab portrait PNGs (confusion matrix excluded)
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for stem, results_df, _ in results:
+            png = tab_to_portrait_image(results_df, stem)
+            zf.writestr(f"{safe_filename(stem)}.png", png)
+    zip_buf.seek(0)
+    zip_bytes = zip_buf.read()
+=======
     # Build ZIP of per-tab portrait PNGs only when a single file is uploaded
     # (two files = paired t-test mode; images not needed there)
-    single_file_mode = len(set(fname for fname, _, _ in valid_file_map)) == 1
+    single_file_mode = len(set(fname for fname, _, _ in valid_file_map)) == 1 if valid_file_map else True
+>>>>>>> Stashed changes
 
     st.subheader("Download")
-    if single_file_mode:
-        dl1, dl2, dl3 = st.columns(3)
-    else:
-        dl1, dl2 = st.columns(2)
-        dl3 = None
+    dl1, dl2, dl3 = st.columns(3)
     with dl1:
         if overall_cm is not None:
             st.download_button(
@@ -406,6 +409,8 @@ else:
                 mime="text/csv",
                 use_container_width=True,
             )
+        else:
+            st.write("")   # keep column balanced
     with dl2:
         st.download_button(
             label="⬇ Download Results Excel",
@@ -415,26 +420,11 @@ else:
             type="primary",
             use_container_width=True,
         )
-    if single_file_mode and dl3 is not None:
-        with dl3:
-            if st.button("⬇ Generate & Download Images (ZIP)",
-                         key="gen_images_btn", use_container_width=True):
-                try:
-                    zip_buf = io.BytesIO()
-                    with st.spinner("Rendering images…"):
-                        with zipfile.ZipFile(zip_buf, "w",
-                                             compression=zipfile.ZIP_DEFLATED) as zf:
-                            for stem, results_df, _ in results:
-                                png = tab_to_portrait_image(results_df, stem)
-                                zf.writestr(f"{safe_filename(stem)}.png", png)
-                    zip_buf.seek(0)
-                    st.download_button(
-                        label="⬇ Download Images (ZIP)",
-                        data=zip_buf.read(),
-                        file_name="braille_evaluation_images.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                        key="images_zip_dl",
-                    )
-                except Exception as _zip_exc:
-                    st.warning(f"Could not build images ZIP: {_zip_exc}")
+    with dl3:
+        st.download_button(
+            label="⬇ Download Results Images (ZIP)",
+            data=zip_bytes,
+            file_name="braille_evaluation_images.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )

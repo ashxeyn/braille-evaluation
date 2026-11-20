@@ -509,6 +509,95 @@ def _write_summary_sheet(wb: Workbook, sheet_name: str, results_df: pd.DataFrame
             )
 
 
+def write_ttest_sheet(wb: Workbook, ttest_results: dict) -> None:
+    """
+    Write a 'Paired t-Test' sheet into wb containing:
+      - Per-tab paired t-test tables (sample pairs + d̄, Sd, n, t)
+      - Overall t-test summary at the bottom
+    """
+    safe_name = "Paired t-Test"
+    existing = {s.title for s in wb.worksheets}
+    if safe_name in existing:
+        safe_name = "Paired t-Test_2"
+
+    ws = wb.create_sheet(safe_name)
+
+    _STAT_HDR_FILL = PatternFill("solid", fgColor="2E75B6")
+    _STAT_HDR_FONT = Font(bold=True, color="FFFFFF", size=11)
+    _STAT_SUM_FILL = PatternFill("solid", fgColor="E2EFDA")  # light green
+
+    r = 1
+    ws.cell(row=r, column=1, value="Paired t-Test: Raw vs Preprocessed").font = Font(bold=True, size=13, color="1F4E79")
+    ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor="DEEAF1")
+    r += 1
+    ws.cell(row=r, column=1,
+            value="Metric: Character Accuracy (%) per sample_id | d = Accuracy(Pre) − Accuracy(Raw)").font = Font(italic=True, size=9, color="555555")
+    r += 2
+
+    for tab_name, res in ttest_results.items():
+        # Section header
+        hdr = ws.cell(row=r, column=1, value=f"{'Overall' if tab_name == 'Overall' else f'Tab: {tab_name}'}")
+        hdr.font = Font(bold=True, color="FFFFFF", size=11)
+        hdr.fill = _STAT_HDR_FILL
+        for c in range(2, 6):
+            ws.cell(row=r, column=c).fill = _STAT_HDR_FILL
+            ws.cell(row=r, column=c).border = _CELL_BORDER
+        hdr.border = _CELL_BORDER
+        r += 1
+
+        if res.error and res.n < 2:
+            ws.cell(row=r, column=1, value=f"⚠ {res.error}").font = Font(color="FF0000", italic=True)
+            r += 2
+            continue
+
+        # Pairs table header
+        pair_headers = ["sample_id", "Accuracy Raw (%)", "Accuracy Pre (%)", "d (Pre − Raw)"]
+        for ci, h in enumerate(pair_headers, 1):
+            cell = ws.cell(row=r, column=ci, value=h)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.border = _CELL_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        r += 1
+
+        for i, pair_row in res.pairs.iterrows():
+            for ci, col in enumerate(pair_headers, 1):
+                val = pair_row[col] if col in pair_row.index else ""
+                cell = ws.cell(row=r, column=ci, value=val)
+                cell.border = _CELL_BORDER
+                if i % 2 == 0:
+                    cell.fill = _ALT_FILL
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            r += 1
+
+        # Summary stats block
+        ws.append([])
+        r += 1
+        stats = [
+            ("n (paired samples)",         res.n),
+            ("d̄ (mean difference)",        f"{res.d_bar:.6f}"),
+            ("Sd (std dev of differences)", f"{res.sd:.6f}"),
+            ("t-statistic",                f"{res.t_stat:.6f}"),
+        ]
+        for label, val in stats:
+            lc = ws.cell(row=r, column=1, value=label)
+            vc = ws.cell(row=r, column=2, value=val)
+            lc.font = Font(bold=True)
+            lc.fill = _STAT_SUM_FILL
+            vc.fill = _STAT_SUM_FILL
+            lc.border = _CELL_BORDER
+            vc.border = _CELL_BORDER
+            r += 1
+
+        ws.append([])
+        r += 2
+
+    ws.column_dimensions["A"].width = 35
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 20
+
+
 def write_results_excel(results_df: pd.DataFrame) -> bytes:
     """
     Single-file export (backwards compat): one tab named 'Results'.
@@ -516,15 +605,17 @@ def write_results_excel(results_df: pd.DataFrame) -> bytes:
     return write_multi_results_excel([("Results", results_df)])
 
 
-def write_multi_results_excel(files: list) -> bytes:
+def write_multi_results_excel(files: list, ttest_results: dict | None = None) -> bytes:
     """
     Build an in-memory .xlsx where each (name, df[, cm]) entry becomes one tab.
 
     Parameters
     ----------
-    files : list of tuples, each either:
+    files         : list of tuples, each either:
         (tab_name, results_df)                 — no confusion matrix
         (tab_name, results_df, cm_6x6_df)      — with 6x6 confusion matrix
+    ttest_results : optional dict from stats.build_ttest_results;
+                    if provided a 'Paired t-Test' sheet is appended.
 
     Returns raw bytes suitable for st.download_button.
     """
@@ -546,8 +637,7 @@ def write_multi_results_excel(files: list) -> bytes:
         if cm_6x6 is not None:
             all_cms.append(cm_6x6)
 
-    # Combined "Overall Summary (All Tabs)" sheet — only when >1 tab, since a
-    # single tab already has its own Overall Summary section.
+    # Combined "Overall Summary (All Tabs)" sheet
     if len(all_dfs) > 1:
         combined_df = pd.concat(all_dfs, ignore_index=True)
         combined_cm = None
@@ -556,6 +646,10 @@ def write_multi_results_excel(files: list) -> bytes:
             for cm in all_cms[1:]:
                 combined_cm = combined_cm.add(cm, fill_value=0).astype(int)
         _write_summary_sheet(wb, "Overall Summary (All Tabs)", combined_df, combined_cm)
+
+    # Paired t-Test sheet (only when t-test results are provided)
+    if ttest_results:
+        write_ttest_sheet(wb, ttest_results)
 
     buffer = io.BytesIO()
     wb.save(buffer)

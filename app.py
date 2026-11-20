@@ -12,6 +12,7 @@ import pandas as pd
 from excel_io import read_input_excel_all_sheets, write_multi_results_excel
 from batch_processor import process_dataframe
 from image_export import tab_to_portrait_image, sheet_to_image, safe_filename
+from stats import build_ttest_results
 
 st.set_page_config(
     page_title="Evaluation for Braillelink",
@@ -101,6 +102,7 @@ if not uploaded_files:
 # 2. Validate and preview each file
 # ---------------------------------------------------------------------------
 valid_files: list[tuple[str, pd.DataFrame]] = []  # (tab_label, input_df)
+valid_file_map: list[tuple[str, str, pd.DataFrame]] = []  # (filename, tab_label, input_df)
 
 for f in uploaded_files:
     file_stem = os.path.splitext(f.name)[0]
@@ -123,6 +125,7 @@ for f in uploaded_files:
             continue
 
         valid_files.append((tab_label, df))
+        valid_file_map.append((f.name, tab_label, df))
         with st.expander(f"Preview: {tab_label} — {len(df):,} row(s)", expanded=False):
             st.dataframe(df.head(20), use_container_width=True)
             if len(df) > 20:
@@ -149,13 +152,20 @@ st.session_state.upload_signature = _upload_signature
 if st.session_state.eval_results is None:
     if st.button("Evaluate Transcriptions", type="primary"):
         results: list[tuple[str, pd.DataFrame, pd.DataFrame]] = []
+        file_tab_map: dict[str, dict[str, pd.DataFrame]] = {}
 
-        for stem, input_df in valid_files:
+        for fname, stem, input_df in valid_file_map:
             with st.spinner(f"Evaluating {stem}…"):
                 results_df, cm_6x6 = process_dataframe(input_df)
             results.append((stem, results_df, cm_6x6))
+            if fname not in file_tab_map:
+                file_tab_map[fname] = {}
+            file_tab_map[fname][stem] = results_df
 
-        st.session_state.eval_results = results
+        ttest_results = build_ttest_results(file_tab_map)
+
+        st.session_state.eval_results  = results
+        st.session_state.ttest_results = ttest_results
         st.rerun()
 else:
     results = st.session_state.eval_results
@@ -321,8 +331,57 @@ else:
                 st.dataframe(cm_6x6.astype(int), use_container_width=True)
                 st.divider()
 
+    # ---- Paired t-Test results -------------------------------------------
+    ttest_results = st.session_state.get("ttest_results", {})
+    if ttest_results:
+        st.subheader("Paired t-Test: Raw vs Preprocessed")
+        st.markdown(
+            "Character Accuracy (%) per sample is used as the paired measurement.  \n"
+            "**d = Accuracy(Preprocessed) − Accuracy(Raw)** per sample_id."
+        )
+
+        tab_keys = [k for k in ttest_results if k != "Overall"]
+        overall  = ttest_results.get("Overall")
+
+        for tab_key in tab_keys:
+            res = ttest_results[tab_key]
+            with st.expander(f"Tab: {tab_key} — n={res.n}", expanded=False):
+                if res.error:
+                    st.warning(res.error)
+                if not res.pairs.empty:
+                    st.dataframe(res.pairs, use_container_width=True)
+                if res.n >= 2:
+                    tc1, tc2, tc3, tc4 = st.columns(4)
+                    tc1.metric("n", res.n)
+                    tc2.metric("d̄", f"{res.d_bar:.6f}")
+                    tc3.metric("Sd", f"{res.sd:.6f}")
+                    tc4.metric("t", f"{res.t_stat:.6f}")
+
+        if overall:
+            st.markdown("**Overall (all tabs combined)**")
+            if overall.error:
+                st.warning(overall.error)
+            if not overall.pairs.empty:
+                with st.expander("All paired samples (Overall)", expanded=False):
+                    st.dataframe(overall.pairs, use_container_width=True)
+            if overall.n >= 2:
+                oc1, oc2, oc3, oc4 = st.columns(4)
+                oc1.metric("n", overall.n)
+                oc2.metric("d̄", f"{overall.d_bar:.6f}")
+                oc3.metric("Sd", f"{overall.sd:.6f}")
+                oc4.metric("t", f"{overall.t_stat:.6f}")
+
+        st.divider()
+    elif len(results) >= 2:
+        # Files uploaded but neither has "raw" in the name
+        st.info(
+            "ℹ No paired t-test: to enable it, name one file with **'raw'** in the filename "
+            "(e.g. `results_raw.xlsx`) and the other without (e.g. `results_preprocessed.xlsx`)."
+        )
+        st.divider()
+
     # ---- Downloads (side by side) ----------------------------------------
-    excel_bytes = write_multi_results_excel(results)
+    excel_bytes = write_multi_results_excel(results, ttest_results or None)
 
     # Build ZIP of per-tab portrait PNGs (confusion matrix excluded)
     zip_buf = io.BytesIO()

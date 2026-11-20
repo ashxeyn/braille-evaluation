@@ -381,16 +381,24 @@ else:
         st.divider()
 
     # ---- Downloads (side by side) ----------------------------------------
-    excel_bytes = write_multi_results_excel(results, ttest_results or None)
+    try:
+        excel_bytes = write_multi_results_excel(results, ttest_results or None)
+    except Exception as _exc:
+        st.warning(f"Could not include t-test sheet in Excel: {_exc}")
+        excel_bytes = write_multi_results_excel(results, None)
 
     # Build ZIP of per-tab portrait PNGs (confusion matrix excluded)
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for stem, results_df, _ in results:
-            png = tab_to_portrait_image(results_df, stem)
-            zf.writestr(f"{safe_filename(stem)}.png", png)
-    zip_buf.seek(0)
-    zip_bytes = zip_buf.read()
+    try:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for stem, results_df, _ in results:
+                png = tab_to_portrait_image(results_df, stem)
+                zf.writestr(f"{safe_filename(stem)}.png", png)
+        zip_buf.seek(0)
+        zip_bytes = zip_buf.read()
+    except Exception as _zip_exc:
+        st.warning(f"Could not build images ZIP: {_zip_exc}")
+        zip_bytes = b""
 
     st.subheader("Download")
     dl1, dl2, dl3 = st.columns(3)

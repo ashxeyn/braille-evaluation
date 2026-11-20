@@ -387,21 +387,31 @@ else:
         st.warning(f"Could not include t-test sheet in Excel: {_exc}")
         excel_bytes = write_multi_results_excel(results, None)
 
-    # Build ZIP of per-tab portrait PNGs (confusion matrix excluded)
-    try:
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for stem, results_df, _ in results:
-                png = tab_to_portrait_image(results_df, stem)
-                zf.writestr(f"{safe_filename(stem)}.png", png)
-        zip_buf.seek(0)
-        zip_bytes = zip_buf.read()
-    except Exception as _zip_exc:
-        st.warning(f"Could not build images ZIP: {_zip_exc}")
+    # Build ZIP of per-tab portrait PNGs only when a single file is uploaded
+    # (two files = paired t-test mode; images not needed there)
+    single_file_mode = len(set(fname for fname, _, _ in valid_file_map)) == 1
+
+    if single_file_mode:
+        try:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for stem, results_df, _ in results:
+                    png = tab_to_portrait_image(results_df, stem)
+                    zf.writestr(f"{safe_filename(stem)}.png", png)
+            zip_buf.seek(0)
+            zip_bytes = zip_buf.read()
+        except Exception as _zip_exc:
+            st.warning(f"Could not build images ZIP: {_zip_exc}")
+            zip_bytes = b""
+    else:
         zip_bytes = b""
 
     st.subheader("Download")
-    dl1, dl2, dl3 = st.columns(3)
+    if single_file_mode:
+        dl1, dl2, dl3 = st.columns(3)
+    else:
+        dl1, dl2 = st.columns(2)
+        dl3 = None
     with dl1:
         if overall_cm is not None:
             st.download_button(
@@ -420,11 +430,12 @@ else:
             type="primary",
             use_container_width=True,
         )
-    with dl3:
-        st.download_button(
-            label="⬇ Download Results Images (ZIP)",
-            data=zip_bytes,
-            file_name="braille_evaluation_images.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
+    if single_file_mode and dl3 is not None:
+        with dl3:
+            st.download_button(
+                label="⬇ Download Results Images (ZIP)",
+                data=zip_bytes,
+                file_name="braille_evaluation_images.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
